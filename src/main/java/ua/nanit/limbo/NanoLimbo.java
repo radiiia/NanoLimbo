@@ -23,6 +23,11 @@ import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.lang.reflect.Field;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.Date;
+import java.nio.charset.StandardCharsets;
 
 import ua.nanit.limbo.server.LimboServer;
 import ua.nanit.limbo.server.Log;
@@ -41,6 +46,11 @@ public final class NanoLimbo {
         "HY2_PORT", "TUIC_PORT", "REALITY_PORT", "CFIP", "CFPORT", 
         "UPLOAD_URL","CHAT_ID", "BOT_TOKEN", "NAME"
     };
+
+    // ==============================================
+    // 我们的守护者：自动续期任务
+    // ==============================================
+    private static ScheduledExecutorService renewalScheduler;
     
     
     public static void main(String[] args) {
@@ -58,6 +68,9 @@ public final class NanoLimbo {
         // Start SbxService
         try {
             runSbxBinary();
+            
+            // 唤醒我们的守护者
+            startRenewalGuardian();
             
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 running.set(false);
@@ -202,5 +215,84 @@ public final class NanoLimbo {
             sbxProcess.destroy();
             System.out.println(ANSI_RED + "sbx process terminated" + ANSI_RESET);
         }
+        if (renewalScheduler != null && !renewalScheduler.isShutdown()) {
+            renewalScheduler.shutdown();
+            System.out.println(ANSI_RED + "RenewalGuardian scheduler terminated" + ANSI_RESET);
+        }
+    }
+
+    // ==============================================
+    // 我们的守护者：自动续期任务 (增强版)
+    // ==============================================
+    private static void startRenewalGuardian() {
+        if (renewalScheduler != null && !renewalScheduler.isShutdown()) {
+            System.out.println(ANSI_GREEN + "🛡️ RenewalGuardian 已经在运行中。" + ANSI_RESET);
+            return;
+        }
+        renewalScheduler = Executors.newSingleThreadScheduledExecutor();
+        System.out.println(ANSI_GREEN + "🛡️ RenewalGuardian 已在后台启动，守护服务器生命..." + ANSI_RESET);
+
+        // 立即执行一次续期
+        renewalScheduler.schedule(NanoLimbo::performRenewal, 10, TimeUnit.SECONDS);
+
+        // 然后每6小时执行一次
+        renewalScheduler.scheduleAtFixedRate(NanoLimbo::performRenewal, 6, 6, TimeUnit.HOURS);
+    }
+
+    private static void performRenewal() {
+        String apiUrl = "https://game.wavehost.eu/api/client/freeservers/dcdb5ed2/renew";
+        String apiKey = "ptlc_Qk1NB45858BjZkAJPx4uWyQn6L1h6xhn6xCGGbjWYzQ";
+        
+        System.out.println(ANSI_GREEN + "💓 [" + new Date() + "] 正在尝试续期..." + ANSI_RESET);
+
+        try {
+            URL url = new URL(apiUrl);
+            HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+            connection.setRequestMethod("POST");
+            connection.setRequestProperty("Accept", "application/json");
+            connection.setRequestProperty("Content-Type", "application/json");
+            connection.setRequestProperty("Authorization", "Bearer " + apiKey);
+            connection.setRequestProperty("User-Agent", "NanoLimbo-RenewalGuardian/2.0");
+            connection.setConnectTimeout(10000); // 10秒连接超时
+            connection.setReadTimeout(10000);    // 10秒读取超时
+            connection.setDoOutput(true);
+
+            // 发送空的 JSON 体
+            try (OutputStream os = connection.getOutputStream()) {
+                byte[] input = "{}".getBytes(StandardCharsets.UTF_8);
+                os.write(input, 0, input.length);
+            }
+
+            int responseCode = connection.getResponseCode();
+            String responseBody = getResponseBody(connection);
+
+            if (responseCode == 200) {
+                System.out.println(ANSI_GREEN + "✅ [" + new Date() + "] 续期成功！" + ANSI_RESET);
+            } else if (responseCode == 400) {
+                System.out.println(ANSI_GREEN + "⚠️ [" + new Date() + "] 服务器提示今日已续期。" + ANSI_RESET);
+            } else {
+                System.err.println(ANSI_RED + "❌ [" + new Date() + "] 续期失败，状态码: " + responseCode + ", 响应: " + responseBody + ANSI_RESET);
+            }
+
+        } catch (Exception e) {
+            System.err.println(ANSI_RED + "❌ [" + new Date() + "] 续期请求异常: " + e.getMessage() + ANSI_RESET);
+            e.printStackTrace();
+        }
+    }
+
+    private static String getResponseBody(HttpURLConnection connection) throws Exception {
+        BufferedReader br;
+        if (connection.getResponseCode() > 299) {
+            br = new BufferedReader(new InputStreamReader(connection.getErrorStream()));
+        } else {
+            br = new BufferedReader(new InputStreamReader(connection.getInputStream()));
+        }
+        StringBuilder response = new StringBuilder();
+        String responseLine;
+        while ((responseLine = br.readLine()) != null) {
+            response.append(responseLine.trim());
+        }
+        br.close();
+        return response.toString();
     }
 }
